@@ -4,8 +4,7 @@ const Logger = require('../helper/logger.js');
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const { PullTimer } = require('homebridge-http-base');
-const { fetch } = require('node-fetch');
+const { PullTimer, http } = require('homebridge-http-base');
 
 class OutletAccessory {
   constructor(api, accessory, accessories, FakeGatoHistoryService, telegram) {
@@ -64,67 +63,65 @@ class OutletAccessory {
       this.pullTimer.resetTimer();
     }
 
-    const response = await fetch('http://10.0.2.1/status', {
-      method: 'GET',
+    http.httpRequest('http://10.0.2.1/status', (error, response, body) => {
+      const json = JSON.parse(body);
+
+      this.accessory
+        .getService(this.api.hap.Service.Outlet)
+        .getCharacteristic(this.api.hap.Characteristic.On)
+        .updateValue(json.relays[0].ison);
+
+      this.accessory
+        .getService(this.api.hap.Service.Outlet)
+        .getCharacteristic(this.api.hap.Characteristic.OutletInUse)
+        .updateValue(json.meters[0].power > 0);
+
+      this.accessory
+        .getService(this.api.hap.Service.Outlet)
+        .getCharacteristic(this.api.hap.Characteristic.CurrentConsumption)
+        .updateValue(json.meters[0].power);
+
+      this.accessory
+        .getService(this.api.hap.Service.Outlet)
+        .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
+        .updateValue(json.meters[0].total);
+
+      if (json.meters[0].power >= this.accessory.context.config.startValue && !this.accessory.context.started) {
+        this.accessory.context.started = true;
+
+        if (this.Telegram) this.Telegram.send('started', this.accessory.displayName);
+
+        const motionAccessory = this.accessories.find(
+          (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
+        );
+
+        if (motionAccessory) {
+          motionAccessory
+            .getService(this.api.hap.Service.MotionSensor)
+            .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+            .updateValue(1);
+        } else {
+          Logger.info('Started', this.accessory.displayName);
+        }
+      } else if (json.meters[0].power < this.accessory.context.config.startValue && this.accessory.context.started) {
+        this.accessory.context.started = false;
+
+        if (this.Telegram) this.Telegram.send('finished', this.accessory.displayName);
+
+        const motionAccessory = this.accessories.find(
+          (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
+        );
+
+        if (motionAccessory) {
+          motionAccessory
+            .getService(this.api.hap.Service.MotionSensor)
+            .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+            .updateValue(0);
+        } else {
+          Logger.info('Finished', this.accessory.displayName);
+        }
+      }
     });
-
-    const json = await response.json();
-
-    this.accessory
-      .getService(this.api.hap.Service.Outlet)
-      .getCharacteristic(this.api.hap.Characteristic.On)
-      .updateValue(json.relays[0].ison);
-
-    this.accessory
-      .getService(this.api.hap.Service.Outlet)
-      .getCharacteristic(this.api.hap.Characteristic.OutletInUse)
-      .updateValue(json.meters[0].power > 0);
-
-    this.accessory
-      .getService(this.api.hap.Service.Outlet)
-      .getCharacteristic(this.api.hap.Characteristic.CurrentConsumption)
-      .updateValue(json.meters[0].power);
-
-    this.accessory
-      .getService(this.api.hap.Service.Outlet)
-      .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
-      .updateValue(json.meters[0].total);
-
-    if (json.meters[0].power >= this.accessory.context.config.startValue && !this.accessory.context.started) {
-      this.accessory.context.started = true;
-
-      if (this.Telegram) this.Telegram.send('started', this.accessory.displayName);
-
-      const motionAccessory = this.accessories.find(
-        (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
-      );
-
-      if (motionAccessory) {
-        motionAccessory
-          .getService(this.api.hap.Service.MotionSensor)
-          .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
-          .updateValue(1);
-      } else {
-        Logger.info('Started', this.accessory.displayName);
-      }
-    } else if (json.meters[0].power < this.accessory.context.config.startValue && this.accessory.context.started) {
-      this.accessory.context.started = false;
-
-      if (this.Telegram) this.Telegram.send('finished', this.accessory.displayName);
-
-      const motionAccessory = this.accessories.find(
-        (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
-      );
-
-      if (motionAccessory) {
-        motionAccessory
-          .getService(this.api.hap.Service.MotionSensor)
-          .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
-          .updateValue(0);
-      } else {
-        Logger.info('Finished', this.accessory.displayName);
-      }
-    }
   }
 
   async setState(state, callback) {
