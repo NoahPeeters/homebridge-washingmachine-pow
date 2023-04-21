@@ -10,22 +10,21 @@ const https = require('http');
 
 function fetch(url, callback) {
   https
-      .get(url, (res) => {
-        let data = [];
+    .get(url, (res) => {
+      let data = [];
 
-        res.on('data', (chunk) => {
-          data.push(chunk);
-        });
-
-        res.on('end', () => {
-          console.log('Response ended: ');
-          const response = JSON.parse(Buffer.concat(data).toString());
-          callback(response, undefined);
-        });
-      })
-      .on('error', (err) => {
-        callback(undefined, err);
+      res.on('data', (chunk) => {
+        data.push(chunk);
       });
+
+      res.on('end', () => {
+        const response = JSON.parse(Buffer.concat(data).toString());
+        callback(response, undefined);
+      });
+    })
+    .on('error', (err) => {
+      callback(undefined, err);
+    });
 }
 
 class OutletAccessory {
@@ -108,7 +107,7 @@ class OutletAccessory {
       this.accessory
         .getService(this.api.hap.Service.Outlet)
         .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
-        .updateValue(json.meters[0].total);
+        .updateValue(json.meters[0].total / 60 / 1000);
 
       if (json.meters[0].power >= this.accessory.context.config.startValue && !this.accessory.context.started) {
         this.accessory.context.started = true;
