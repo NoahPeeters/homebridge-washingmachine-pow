@@ -5,7 +5,7 @@ const Logger = require('../helper/logger.js');
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 
 const { PullTimer } = require('homebridge-http-base');
-import fetch from 'node-fetch';
+const { fetch } = require('node-fetch');
 
 class OutletAccessory {
   constructor(api, accessory, accessories, FakeGatoHistoryService, telegram) {
