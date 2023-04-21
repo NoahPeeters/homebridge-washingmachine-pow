@@ -64,6 +64,8 @@ class OutletAccessory {
     }
 
     http.httpRequest('http://10.0.2.1/status', (error, response, body) => {
+      Logger.warn('error', error);
+      Logger.warn('response', response);
       Logger.warn('Data', body);
       const json = JSON.parse(body);
 
