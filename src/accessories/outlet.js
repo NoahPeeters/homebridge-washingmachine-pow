@@ -4,7 +4,8 @@ const Logger = require('../helper/logger.js');
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const MQTT = require('async-mqtt');
+const { PullTimer } = require('homebridge-http-base');
+import fetch from 'node-fetch';
 
 class OutletAccessory {
   constructor(api, accessory, accessories, FakeGatoHistoryService, telegram) {
@@ -39,15 +40,6 @@ class OutletAccessory {
     if (!service.testCharacteristic(this.api.hap.Characteristic.TotalConsumption))
       service.addCharacteristic(this.api.hap.Characteristic.TotalConsumption);
 
-    if (!service.testCharacteristic(this.api.hap.Characteristic.Volts))
-      service.addCharacteristic(this.api.hap.Characteristic.Volts);
-
-    if (!service.testCharacteristic(this.api.hap.Characteristic.Amperes))
-      service.addCharacteristic(this.api.hap.Characteristic.Amperes);
-
-    if (!service.testCharacteristic(this.api.hap.Characteristic.ResetTotal))
-      service.addCharacteristic(this.api.hap.Characteristic.ResetTotal);
-
     this.historyService = new this.FakeGatoHistoryService('energy', this.accessory, { storage: 'fs' });
 
     await timeout(250);
@@ -56,243 +48,112 @@ class OutletAccessory {
       .getCharacteristic(this.api.hap.Characteristic.CurrentConsumption)
       .on('change', this.changedState.bind(this));
 
-    service.getCharacteristic(this.api.hap.Characteristic.ResetTotal).on('set', this.resetEnergy.bind(this));
-
     service.getCharacteristic(this.api.hap.Characteristic.On).on('set', this.setState.bind(this));
 
     this.start();
     this.refreshHistory(service);
   }
 
-  async start() {
-    try {
-      this.client = MQTT.connect(
-        'mqtt://' + this.accessory.context.config.ip + ':' + this.accessory.context.config.port,
-        this.accessory.context.config.options
-      );
-
-      this.client.on('error', (err) => {
-        Logger.error('An error occured with MQTT', this.accessory.displayName);
-        Logger.error(err);
-      });
-
-      this.client.on('close', () => {
-        Logger.info('MQTT closed', this.accessory.displayName);
-      });
-
-      this.client.on('Offline', () => {
-        Logger.info('MQTT offline', this.accessory.displayName);
-      });
-
-      this.client.on('reconnect', () => {
-        Logger.info('MQTT reconnecting...', this.accessory.displayName);
-      });
-
-      this.client.on('end', () => {
-        Logger.info('MQTT quitted', this.accessory.displayName);
-      });
-
-      Logger.info('Connecting to mqtt broker', this.accessory.displayName);
-
-      this.client.on('connect', async () => {
-        Logger.info('Connected. Subscribing to topics...', this.accessory.displayName);
-
-        try {
-          await this.client.subscribe(this.accessory.context.config.topics.energyGet);
-          await this.client.subscribe(this.accessory.context.config.topics.stateGet);
-          await this.client.subscribe(this.accessory.context.config.topics.statusGet);
-        } catch (err) {
-          Logger.error('An error occured while subscribing to topics', this.accessory.displayName);
-          Logger.error(err);
-        }
-
-        Logger.info('Subscribed!', this.accessory.displayName);
-
-        this.getState();
-      });
-    } catch (err) {
-      Logger.error('An error occured while connecting to mqtt broker', this.accessory.displayName);
-      Logger.error(err);
-    }
+  start() {
+    this.pullTimer = new PullTimer(this.log, 5000, this.getStatus.bind(this), (value) => {});
+    this.pullTimer.start();
   }
 
-  async getState() {
-    this.client.on('message', (topic, message, state) => {
-      switch (topic) {
-        case this.accessory.context.config.topics.statusGet:
-          Logger.debug(message.toString() + ' (statusGet)', this.accessory.displayName);
+  async getStatus() {
+    if (this.pullTimer) {
+      this.pullTimer.resetTimer();
+    }
 
-          message = message.toString();
-          state = message === this.accessory.context.config.onValue ? true : false;
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.On)
-            .updateValue(state);
-
-          break;
-
-        case this.accessory.context.config.topics.stateGet:
-          Logger.debug(message.toString() + ' (stateGet)', this.accessory.displayName);
-
-          try {
-            message = JSON.parse(message);
-          } catch (err) {
-            Logger.warn('Received bad response from device (stateGet)');
-            Logger.warn(message);
-            return;
-          }
-
-          state = message.POWER === this.accessory.context.config.onValue ? true : false;
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.On)
-            .updateValue(state);
-
-          break;
-
-        case this.accessory.context.config.topics.energyGet:
-          Logger.debug(message.toString() + ' (energyGet)', this.accessory.displayName);
-
-          try {
-            message = JSON.parse(message);
-          } catch (err) {
-            Logger.warn('Received bad response from device (energyGet)');
-            Logger.warn(message);
-            return;
-          }
-
-          state = message.ENERGY.Power ? true : false;
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.OutletInUse)
-            .updateValue(state);
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.CurrentConsumption)
-            .updateValue(message.ENERGY.Power);
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
-            .updateValue(message.ENERGY.Total);
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.Volts)
-            .updateValue(message.ENERGY.Voltage);
-
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.Amperes)
-            .updateValue(message.ENERGY.Current);
-
-          if (message.ENERGY.Power >= this.accessory.context.config.startValue && !this.accessory.context.started) {
-            this.accessory.context.started = true;
-
-            if (this.Telegram) this.Telegram.send('started', this.accessory.displayName);
-
-            const motionAccessory = this.accessories.find(
-              (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
-            );
-
-            if (motionAccessory) {
-              motionAccessory
-                .getService(this.api.hap.Service.MotionSensor)
-                .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
-                .updateValue(1);
-            } else {
-              Logger.info('Started', this.accessory.displayName);
-            }
-          } else if (
-            message.ENERGY.Power < this.accessory.context.config.startValue &&
-            this.accessory.context.started
-          ) {
-            this.accessory.context.started = false;
-
-            if (this.Telegram) this.Telegram.send('finished', this.accessory.displayName);
-
-            const motionAccessory = this.accessories.find(
-              (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
-            );
-
-            if (motionAccessory) {
-              motionAccessory
-                .getService(this.api.hap.Service.MotionSensor)
-                .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
-                .updateValue(0);
-            } else {
-              Logger.info('Finished', this.accessory.displayName);
-            }
-          }
-
-          break;
-
-        default:
-          //fall throug
-          break;
-      }
+    const response = await fetch('http://10.0.2.1/status', {
+      method: 'GET',
     });
+
+    const json = await response.json();
+
+    this.accessory
+      .getService(this.api.hap.Service.Outlet)
+      .getCharacteristic(this.api.hap.Characteristic.On)
+      .updateValue(json.relays[0].ison);
+
+    this.accessory
+      .getService(this.api.hap.Service.Outlet)
+      .getCharacteristic(this.api.hap.Characteristic.OutletInUse)
+      .updateValue(json.meters[0].power > 0);
+
+    this.accessory
+      .getService(this.api.hap.Service.Outlet)
+      .getCharacteristic(this.api.hap.Characteristic.CurrentConsumption)
+      .updateValue(json.meters[0].power);
+
+    this.accessory
+      .getService(this.api.hap.Service.Outlet)
+      .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
+      .updateValue(json.meters[0].total);
+
+    if (json.meters[0].power >= this.accessory.context.config.startValue && !this.accessory.context.started) {
+      this.accessory.context.started = true;
+
+      if (this.Telegram) this.Telegram.send('started', this.accessory.displayName);
+
+      const motionAccessory = this.accessories.find(
+        (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
+      );
+
+      if (motionAccessory) {
+        motionAccessory
+          .getService(this.api.hap.Service.MotionSensor)
+          .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+          .updateValue(1);
+      } else {
+        Logger.info('Started', this.accessory.displayName);
+      }
+    } else if (json.meters[0].power < this.accessory.context.config.startValue && this.accessory.context.started) {
+      this.accessory.context.started = false;
+
+      if (this.Telegram) this.Telegram.send('finished', this.accessory.displayName);
+
+      const motionAccessory = this.accessories.find(
+        (accessory) => accessory.displayName === this.accessory.displayName + ' Motion'
+      );
+
+      if (motionAccessory) {
+        motionAccessory
+          .getService(this.api.hap.Service.MotionSensor)
+          .getCharacteristic(this.api.hap.Characteristic.MotionDetected)
+          .updateValue(0);
+      } else {
+        Logger.info('Finished', this.accessory.displayName);
+      }
+    }
   }
 
   async setState(state, callback) {
-    let cmd = state ? 'on' : 'off';
+    // let cmd = state ? 'on' : 'off';
+    //
+    // try {
+    //   if (this.client) {
+    //     Logger.debug(
+    //       'Send cmd (' + this.accessory.context.config.topics.statusSet + ') => ' + cmd,
+    //       this.accessory.displayName
+    //     );
+    //
+    //     await this.client.publish(this.accessory.context.config.topics.statusSet, cmd);
+    //   } else {
+    //     Logger.warn('Not connected to mqtt broker!', this.accessory.displayName);
+    //
+    //     setTimeout(() => {
+    //       this.accessory
+    //         .getService(this.api.hap.Service.Outlet)
+    //         .getCharacteristic(this.api.hap.Characteristic.On)
+    //         .updateValue(state ? false : true);
+    //     }, 1000);
+    //   }
+    // } catch (err) {
+    //   Logger.error('An error occured during setting state to ' + cmd, this.accessory.displayName);
+    //   Logger.error(err);
+    // }
 
-    try {
-      if (this.client) {
-        Logger.debug(
-          'Send cmd (' + this.accessory.context.config.topics.statusSet + ') => ' + cmd,
-          this.accessory.displayName
-        );
-
-        await this.client.publish(this.accessory.context.config.topics.statusSet, cmd);
-      } else {
-        Logger.warn('Not connected to mqtt broker!', this.accessory.displayName);
-
-        setTimeout(() => {
-          this.accessory
-            .getService(this.api.hap.Service.Outlet)
-            .getCharacteristic(this.api.hap.Characteristic.On)
-            .updateValue(state ? false : true);
-        }, 1000);
-      }
-    } catch (err) {
-      Logger.error('An error occured during setting state to ' + cmd, this.accessory.displayName);
-      Logger.error(err);
-    }
-
-    callback(null);
-  }
-
-  async resetEnergy(state, callback) {
-    try {
-      Logger.info('Resetting power meter...', this.accessory.displayName);
-
-      const now = Math.round(new Date().valueOf() / 1000);
-      const epoch = Math.round(new Date('2001-01-01T00:00:00Z').valueOf() / 1000);
-
-      for (const topic of this.accessory.context.config.topics.resetSet) {
-        Logger.debug('Send cmd (' + topic + ') => 0', this.accessory.displayName);
-        await this.client.publish(topic, '0');
-      }
-
-      this.accessory
-        .getService(this.api.hap.Service.Outlet)
-        .getCharacteristic(this.api.hap.Characteristic.ResetTotal)
-        .updateValue(now - epoch);
-
-      this.accessory
-        .getService(this.api.hap.Service.Outlet)
-        .getCharacteristic(this.api.hap.Characteristic.TotalConsumption)
-        .updateValue(0);
-    } catch (err) {
-      Logger.error('An error occured while resetting power meter', this.accessory.displayName);
-      Logger.error(err);
-    }
-
+    // Do nothing
     callback(null);
   }
 

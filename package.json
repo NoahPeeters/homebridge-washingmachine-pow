@@ -46,7 +46,9 @@
   "dependencies": {
     "async-mqtt": "^2.6.1",
     "fakegato-history": "^0.6.1",
-    "form-data": "^4.0.0"
+    "form-data": "^4.0.0",
+    "homebridge-http-base": "^2.1.13",
+    "node-fetch": "^3.3.1"
   },
   "devDependencies": {
     "@babel/core": "7.14.3",
