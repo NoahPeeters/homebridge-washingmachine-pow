@@ -4,7 +4,29 @@ const Logger = require('../helper/logger.js');
 
 const timeout = (ms) => new Promise((res) => setTimeout(res, ms));
 
-const { PullTimer, http } = require('homebridge-http-base');
+const { PullTimer } = require('homebridge-http-base');
+
+const https = require('http');
+
+function fetch(url, callback) {
+  https
+      .get(url, (res) => {
+        let data = [];
+
+        res.on('data', (chunk) => {
+          data.push(chunk);
+        });
+
+        res.on('end', () => {
+          console.log('Response ended: ');
+          const response = JSON.parse(Buffer.concat(data).toString());
+          callback(response, undefined);
+        });
+      })
+      .on('error', (err) => {
+        callback(undefined, err);
+      });
+}
 
 class OutletAccessory {
   constructor(api, accessory, accessories, FakeGatoHistoryService, telegram) {
@@ -63,12 +85,11 @@ class OutletAccessory {
       this.pullTimer.resetTimer();
     }
 
-    http.httpRequest('http://10.0.2.1/status', (error, response, body) => {
-      Logger.warn('error', error);
-      Logger.warn('response', response);
-      Logger.warn('Data', body);
-      const json = JSON.parse(body);
-
+    fetch('http://10.0.2.1/status', (json, error) => {
+      if (error) {
+        console.log(error);
+        return;
+      }
       this.accessory
         .getService(this.api.hap.Service.Outlet)
         .getCharacteristic(this.api.hap.Characteristic.On)
